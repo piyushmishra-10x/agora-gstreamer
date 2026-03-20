@@ -26,9 +26,9 @@ echo ""
 # Step 1: Run pipeline, capture all output to file
 timeout "$DURATION" gst-launch-1.0 -e \
   nvv4l2camerasrc device=/dev/video0 ! \
-  "video/x-raw(memory:NVMM),format=UYVY,width=1280,height=720,framerate=30/1" ! \
+  'video/x-raw(memory:NVMM),format=UYVY,width=1280,height=720,framerate=30/1' ! \
   nvvidconv ! \
-  "video/x-raw(memory:NVMM),format=NV12" ! \
+  'video/x-raw(memory:NVMM),format=NV12' ! \
   nvv4l2h264enc maxperf-enable=1 preset-level=1 control-rate=1 \
       bitrate=1000000 insert-sps-pps=1 iframeinterval=30 num-B-Frames=0 ! \
   h264parse config-interval=-1 ! \
