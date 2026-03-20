@@ -1,14 +1,13 @@
 #!/bin/bash
 # Jetson Sender-Side Latency Tracker
-# Logs per-element GStreamer latency + system metrics to CSV
+# Logs per-element GStreamer latency to CSV
 
-DURATION=${1:-300}  # default 5 minutes
+DURATION=${1:-120}  # default 2 minutes
 LOG_DIR="/tmp/latency_logs"
 mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RAW_LOG="$LOG_DIR/raw_trace_${TIMESTAMP}.log"
 ELEMENT_LOG="$LOG_DIR/sender_elements_${TIMESTAMP}.csv"
-SUMMARY_LOG="$LOG_DIR/sender_summary_${TIMESTAMP}.csv"
-SYSTEM_LOG="$LOG_DIR/sender_system_${TIMESTAMP}.csv"
 
 export GST_PLUGIN_PATH=/usr/local/lib/aarch64-linux-gnu/gstreamer-1.0
 export GST_TRACERS="latency(flags=pipeline+element)"
@@ -19,33 +18,12 @@ CHANNEL="${AGORA_CHANNEL:-gmsl_cam}"
 
 echo "=== Jetson Sender Latency Tracker ==="
 echo "Duration: ${DURATION}s"
-echo "Element log: $ELEMENT_LOG"
-echo "Summary log: $SUMMARY_LOG"
-echo "System log:  $SYSTEM_LOG"
+echo "Raw log:  $RAW_LOG"
+echo ""
+echo "Starting pipeline... (Ctrl+C to stop early)"
 echo ""
 
-# CSV headers
-echo "wall_clock_ms,element,latency_ns,latency_ms" > "$ELEMENT_LOG"
-echo "timestamp,capsfilter0_ms,videorate0_ms,nvvconv0_ms,nvv4l2h264enc0_ms,h264parse0_ms,total_pipeline_ms,out_video_fps" > "$SUMMARY_LOG"
-echo "timestamp,cpu_percent,mem_used_mb,gpu_freq_mhz,enc_freq_mhz" > "$SYSTEM_LOG"
-
-# Start system monitoring in background
-(
-    while true; do
-        ts=$(date +%s%3N)
-        cpu=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' 2>/dev/null || echo "0")
-        mem=$(free -m | awk '/Mem:/{print $3}' 2>/dev/null || echo "0")
-        gpu_freq=$(cat /sys/devices/gpu.0/devfreq/17000000.ga10b/cur_freq 2>/dev/null || echo "0")
-        gpu_freq_mhz=$((gpu_freq / 1000000))
-        enc_freq=$(cat /sys/kernel/debug/bpmp/debug/clk/nafll_nvenc/rate 2>/dev/null || echo "0")
-        enc_freq_mhz=$((enc_freq / 1000000))
-        echo "$ts,$cpu,$mem,$gpu_freq_mhz,$enc_freq_mhz" >> "$SYSTEM_LOG"
-        sleep 2
-    done
-) &
-SYSTEM_PID=$!
-
-# Run GStreamer pipeline with tracing
+# Step 1: Run pipeline, capture all output to file
 timeout "$DURATION" gst-launch-1.0 -e \
   nvv4l2camerasrc device=/dev/video0 ! \
   'video/x-raw(memory:NVMM),format=UYVY,width=1280,height=720,framerate=120/1' ! \
@@ -57,75 +35,69 @@ timeout "$DURATION" gst-launch-1.0 -e \
       bitrate=1000000 insert-sps-pps=1 iframeinterval=30 num-B-Frames=0 ! \
   h264parse config-interval=-1 ! \
   agorasink appid="$APP_ID" channel="$CHANNEL" verbose=true \
-  2>&1 | while IFS= read -r line; do
+  2>"$RAW_LOG"
 
-    # Parse element-latency traces
-    if echo "$line" | grep -q "element-latency,"; then
-        element=$(echo "$line" | grep -oP 'element=\(string\)\K[^,]+')
-        latency_ns=$(echo "$line" | grep -oP 'time=\(guint64\)\K[0-9]+')
-        ts_ns=$(echo "$line" | grep -oP 'ts=\(guint64\)\K[0-9]+')
-        if [ -n "$element" ] && [ -n "$latency_ns" ]; then
-            latency_ms=$(awk "BEGIN {printf \"%.3f\", $latency_ns / 1000000}")
-            echo "$ts_ns,$element,$latency_ns,$latency_ms" >> "$ELEMENT_LOG"
-        fi
+echo ""
+echo "=== Pipeline stopped. Processing traces... ==="
+echo ""
+
+# Step 2: Extract element latencies from raw trace log
+echo "wall_clock_ns,element,latency_ns,latency_ms" > "$ELEMENT_LOG"
+grep "element-latency," "$RAW_LOG" | while IFS= read -r line; do
+    element=$(echo "$line" | grep -oP 'element=\(string\)\K[^,]+')
+    latency_ns=$(echo "$line" | grep -oP 'time=\(guint64\)\K[0-9]+')
+    ts_ns=$(echo "$line" | grep -oP 'ts=\(guint64\)\K[0-9]+')
+    if [ -n "$element" ] && [ -n "$latency_ns" ]; then
+        latency_ms=$(awk "BEGIN {printf \"%.3f\", $latency_ns / 1000000}")
+        echo "$ts_ns,$element,$latency_ns,$latency_ms" >> "$ELEMENT_LOG"
     fi
-
-    # Parse fps output
-    if echo "$line" | grep -q "Out video fps:"; then
-        fps=$(echo "$line" | grep -oP 'Out video fps: \K[0-9]+')
-        echo "  [FPS] Out: $fps"
-    fi
-
-    # Print agorasink verbose output (not trace lines)
-    if echo "$line" | grep -q "agorasink:" && ! echo "$line" | grep -q "TRACE"; then
-        echo "  $line"
-    fi
-
-    # Print connection events
-    if echo "$line" | grep -q "onConnect\|agora has been"; then
-        echo "  [EVENT] $line"
-    fi
-
 done
 
-# Stop system monitor
-kill $SYSTEM_PID 2>/dev/null
-
+# Step 3: Extract FPS readings
 echo ""
-echo "=== Pipeline stopped ==="
-echo ""
+echo "=== FPS Readings ==="
+grep "Out video fps:" "$RAW_LOG" | head -20
 
-# Generate summary
+# Step 4: Summary
+echo ""
 echo "=== Per-Element Latency Summary ==="
 echo ""
 
-if [ -f "$ELEMENT_LOG" ] && [ $(wc -l < "$ELEMENT_LOG") -gt 1 ]; then
-    for elem in capsfilter0 videorate0 nvvconv0 nvv4l2h264enc0 h264parse0; do
+ELEM_COUNT=$(wc -l < "$ELEMENT_LOG")
+if [ "$ELEM_COUNT" -gt 1 ]; then
+    printf "%-25s  %-8s  %-10s  %-10s  %-10s  %-10s\n" "Element" "Samples" "Min(ms)" "Avg(ms)" "P95(ms)" "Max(ms)"
+    printf "%-25s  %-8s  %-10s  %-10s  %-10s  %-10s\n" "-------" "-------" "-------" "-------" "-------" "-------"
+
+    for elem in capsfilter0 videorate0 nvvconv0 capsfilter2 nvv4l2h264enc0 h264parse0; do
         count=$(grep ",$elem," "$ELEMENT_LOG" | wc -l)
         if [ "$count" -gt 0 ]; then
             avg=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' '{sum+=$4; n++} END {if(n>0) printf "%.3f", sum/n; else print "0"}')
-            min=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' 'NR==1||$4<min{min=$4} END {printf "%.3f", min}')
-            max=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' 'NR==1||$4>max{max=$4} END {printf "%.3f", max}')
-            p95=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' '{print $4}' | sort -n | awk -v n="$count" 'NR==int(n*0.95){print}')
-            printf "%-25s  samples=%-6d  min=%-8s  avg=%-8s  p95=%-8s  max=%-8s ms\n" "$elem" "$count" "$min" "$avg" "${p95:-N/A}" "$max"
+            min=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' 'NR==1{min=$4} $4<min{min=$4} END {printf "%.3f", min}')
+            max=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' 'NR==1{max=$4} $4>max{max=$4} END {printf "%.3f", max}')
+            p95=$(grep ",$elem," "$ELEMENT_LOG" | awk -F',' '{print $4}' | sort -n | awk -v n="$count" 'NR==int(n*0.95){printf "%.3f", $0}')
+            printf "%-25s  %-8d  %-10s  %-10s  %-10s  %-10s\n" "$elem" "$count" "$min" "$avg" "${p95:-N/A}" "$max"
         fi
     done
 
     echo ""
 
-    # Total pipeline latency per frame cycle
-    total_avg=$(grep ",nvv4l2h264enc0," "$ELEMENT_LOG" | awk -F',' '{sum+=$4; n++} END {if(n>0) printf "%.3f", sum/n; else print "0"}')
-    nvvidconv_avg=$(grep ",nvvconv0," "$ELEMENT_LOG" | awk -F',' '{sum+=$4; n++} END {if(n>0) printf "%.3f", sum/n; else print "0"}')
-    pipeline_total=$(awk "BEGIN {printf \"%.3f\", $total_avg + $nvvidconv_avg + 0.3}")
+    # Total
+    enc_avg=$(grep ",nvv4l2h264enc0," "$ELEMENT_LOG" | awk -F',' '{sum+=$4; n++} END {if(n>0) printf "%.3f", sum/n; else print "0"}')
+    conv_avg=$(grep ",nvvconv0," "$ELEMENT_LOG" | awk -F',' '{sum+=$4; n++} END {if(n>0) printf "%.3f", sum/n; else print "0"}')
+    pipeline_total=$(awk "BEGIN {printf \"%.3f\", $enc_avg + $conv_avg + 0.3}")
 
-    echo "=== Total Sender Pipeline Latency ==="
-    echo "  nvvidconv:        ${nvvidconv_avg}ms"
-    echo "  nvv4l2h264enc:    ${total_avg}ms"
-    echo "  other:            ~0.3ms"
-    echo "  ─────────────────────────"
-    echo "  TOTAL:            ~${pipeline_total}ms"
+    echo "=== Total Sender Pipeline ==="
+    echo "  nvvidconv avg:        ${conv_avg} ms"
+    echo "  nvv4l2h264enc avg:    ${enc_avg} ms"
+    echo "  other (caps+parse):   ~0.3 ms"
+    echo "  ─────────────────────────────"
+    echo "  TOTAL:                ~${pipeline_total} ms"
+else
+    echo "No element latency data captured."
+    echo "Check raw log for errors:"
+    tail -20 "$RAW_LOG"
 fi
 
 echo ""
-echo "Logs saved to: $LOG_DIR/"
-ls -la "$LOG_DIR"/sender_*_${TIMESTAMP}.*
+echo "=== Files ==="
+ls -lh "$RAW_LOG" "$ELEMENT_LOG"
