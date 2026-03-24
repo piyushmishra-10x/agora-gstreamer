@@ -63,6 +63,8 @@
 #include <gst/gst.h>
 #include "gstagorasink.h"
 #include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
 
 
 GST_DEBUG_CATEGORY_STATIC (gst_agorasink_debug);
@@ -406,12 +408,36 @@ gboolean read_sps_pps_info(Gstagorasink * filter)
   return TRUE;
 }
 
+static long long get_epoch_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
 /*callback for data received from agora data stream*/
 static void handle_data_received(const char* userId, const char* data,
                                   u_int64_t len, void* user_data) {
     Gstagorasink* filter = (Gstagorasink*)user_data;
 
-    g_print("data received from %s: %.*s\n", userId, (int)len, data);
+    long long recv_ts = get_epoch_ms();
+
+    /*try to extract "ts" from JSON to compute latency*/
+    const char* ts_key = strstr(data, "\"ts\":");
+    if(ts_key) {
+        long long send_ts = 0;
+        sscanf(ts_key, "\"ts\":%lld", &send_ts);
+        if(send_ts > 0) {
+            long long latency = recv_ts - send_ts;
+            g_print("data received from %s | latency: %lld ms | recv_ts: %lld | send_ts: %lld | %.*s\n",
+                    userId, latency, recv_ts, send_ts, (int)len, data);
+        } else {
+            g_print("data received from %s | recv_ts: %lld | %.*s\n",
+                    userId, recv_ts, (int)len, data);
+        }
+    } else {
+        g_print("data received from %s | recv_ts: %lld | %.*s\n",
+                userId, recv_ts, (int)len, data);
+    }
 
     /*emit GObject signal so application code can handle it*/
     g_signal_emit(filter, gst_agorasink_signals[SIGNAL_DATA_RECEIVED], 0,
