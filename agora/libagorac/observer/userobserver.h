@@ -32,6 +32,8 @@ using OnUserLocalTrackStateFn=std::function<void(const std::string& userId,
 
 using OnIframeRequestFn=std::function<void()>;
 
+using OnStreamMessageFn=std::function<void(const std::string& userId, int streamId, const char* data, size_t length)>;
+
 class UserObserver : public agora::rtc::ILocalUserObserver {
  public:
   UserObserver(agora::rtc::ILocalUser* local_user, const bool& verbose);
@@ -47,6 +49,10 @@ class UserObserver : public agora::rtc::ILocalUserObserver {
 
   void setOnIframeRequestFn(const OnIframeRequestFn& fn){
      _onIframeRequest=fn;
+  }
+
+  void setOnStreamMessageFn(const OnStreamMessageFn& fn){
+     _onStreamMessage=fn;
   }
 
   void setOnUserRemoteTrackStatsFn(const OnUserRemoteTrackStateFn& fn);
@@ -181,6 +187,8 @@ class UserObserver : public agora::rtc::ILocalUserObserver {
 
   void onIntraRequestReceived() override;
 
+  void onStreamMessage(agora::user_id_t userId, int streamId, const char* data, size_t length) override;
+
 #if SDK_BUILD_NUM>=190534 
   void onAudioSubscribeStateChanged(const char* channel, agora::user_id_t uid,
                                     agora::rtc::STREAM_SUBSCRIBE_STATE oldState,
@@ -230,6 +238,7 @@ void onVideoSubscribeStateChanged(const char* channel, agora::user_id_t uid,
   OnUserVolumeChangedFn  _onUserVolumeChanged;
 
   OnIframeRequestFn      _onIframeRequest;
+  OnStreamMessageFn      _onStreamMessage;
 
   bool               _verbose;
 

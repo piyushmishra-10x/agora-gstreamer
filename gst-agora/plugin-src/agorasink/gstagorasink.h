@@ -112,6 +112,10 @@ struct _Gstagorasink
   uint8_t* data_annexb;
 
   gboolean is_key_frame_seen;
+
+  /*data stream callback for teleop commands*/
+  agora_data_msg_fn_t data_callback;
+  void* data_callback_user_data;
 };
 
 struct _GstagorasinkClass 

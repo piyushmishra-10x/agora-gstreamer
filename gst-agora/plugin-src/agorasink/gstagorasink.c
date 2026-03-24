@@ -71,9 +71,11 @@ GST_DEBUG_CATEGORY_STATIC (gst_agorasink_debug);
 /* Filter signals and args */
 enum
 {
-  /* FILL ME */
+  SIGNAL_DATA_RECEIVED,
   LAST_SIGNAL
 };
+
+static guint gst_agorasink_signals[LAST_SIGNAL] = { 0 };
 
 enum
 {
@@ -171,6 +173,17 @@ gst_agorasink_class_init (GstagorasinkClass * klass)
   g_object_class_install_property (gobject_class, IN_PORT,
       g_param_spec_int ("inport", "inport", "inport udp port for audio in",0, G_MAXUINT16,
           5004, G_PARAM_READWRITE));
+
+  /*signal emitted when data is received on the data stream (e.g. teleop commands)*/
+  gst_agorasink_signals[SIGNAL_DATA_RECEIVED] =
+      g_signal_new ("data-received",
+          G_TYPE_FROM_CLASS (klass),
+          G_SIGNAL_RUN_LAST,
+          0, NULL, NULL, NULL,
+          G_TYPE_NONE, 3,
+          G_TYPE_STRING,   /*userId*/
+          G_TYPE_STRING,   /*data*/
+          G_TYPE_UINT64);  /*length*/
 
   gst_element_class_set_details_simple(gstelement_class,
     "agorasink",
@@ -393,6 +406,18 @@ gboolean read_sps_pps_info(Gstagorasink * filter)
   return TRUE;
 }
 
+/*callback for data received from agora data stream*/
+static void handle_data_received(const char* userId, const char* data,
+                                  u_int64_t len, void* user_data) {
+    Gstagorasink* filter = (Gstagorasink*)user_data;
+
+    g_print("data received from %s: %.*s\n", userId, (int)len, data);
+
+    /*emit GObject signal so application code can handle it*/
+    g_signal_emit(filter, gst_agorasink_signals[SIGNAL_DATA_RECEIVED], 0,
+                  userId, data, (guint64)len);
+}
+
 int init_agora(Gstagorasink * filter){
 
    if (strlen(filter->app_id)==0){
@@ -425,7 +450,7 @@ int init_agora(Gstagorasink * filter){
    config.in_video_delay=0;
    config.out_audio_delay=0;
    config.out_video_delay=0;
-   config.sendOnly= 1;                          /*send only flag*/
+   config.sendOnly= 0;                          /*send and receive flag (needed for data stream)*/
    config.enableProxy=FALSE;                    /*enable proxy*/
    config.proxy_timeout= 0;                     /*proxy timeout*/
    config.proxy_ips= "";                        /*proxy ips*/
@@ -440,12 +465,20 @@ int init_agora(Gstagorasink * filter){
       return -1;   
    }
 
-   //for agorasink, we need to put it in sendonly mode
-   agoraio_set_sendonly_flag(filter->agora_ctx, 1);
-
    filter->last_audio_buffer_pts=0;
 
    g_print("agora has been successfuly initialized\n");
+
+   /*create data stream for receiving teleop commands*/
+   int data_stream_id = agoraio_create_data_stream(filter->agora_ctx, 1, 1);
+   if(data_stream_id >= 0){
+      g_print("data stream created with id: %d\n", data_stream_id);
+   } else {
+      g_print("warning: failed to create data stream\n");
+   }
+
+   /*register handler for incoming data (teleop commands from UI)*/
+   agoraio_set_data_out_handler(filter->agora_ctx, handle_data_received, (void*)filter);
 
    setup_audio_udp(filter);
 

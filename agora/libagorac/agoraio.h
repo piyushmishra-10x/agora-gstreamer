@@ -83,7 +83,11 @@ class AgoraIo{
    void setAudioOutFn(agora_media_out_fn videoOutFn, void* userData);
 
    void setSendOnly(const bool& flag);
-   
+
+   int createDataStream(bool reliable, bool ordered);
+   int sendData(const char* data, size_t length);
+   void setOnDataReceivedFn(agora_data_msg_fn fn, void* userData);
+
 protected:
 
   bool initAgoraService(const std::string& appid);
@@ -235,6 +239,11 @@ protected:
     bool                                              _enableProxy;
     int                                               _proxyConnectionTimeOut; 
     std::string                                       _proxyIps;   
+
+    int                                               _dataStreamId;
+
+    agora_data_msg_fn                                 _dataOutFn;
+    void*                                             _dataOutUserData;
 
     //turn it on/off when you need the in video to be transcoded
     bool                                              _transcodeVideo;                           

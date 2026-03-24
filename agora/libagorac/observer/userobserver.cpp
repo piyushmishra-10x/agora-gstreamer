@@ -12,6 +12,7 @@ UserObserver::UserObserver(agora::rtc::ILocalUser* local_user, const bool& verbo
     _onUserInfoChanged(nullptr),
     _onUserVolumeChanged(nullptr),
     _onIframeRequest(nullptr),
+    _onStreamMessage(nullptr),
     _verbose(verbose),
     _onRemoteTrackStats(nullptr),
     _onLocalTrackStats(nullptr){
@@ -259,4 +260,17 @@ void UserObserver::setOnUserRemoteTrackStatsFn(const OnUserRemoteTrackStateFn& f
 void UserObserver::setOnUserLocalTrackStatsFn(const OnUserRemoteTrackStateFn& fn){
 
     _onLocalTrackStats=fn;
+}
+
+void UserObserver::onStreamMessage(agora::user_id_t userId, int streamId, const char* data, size_t length) {
+
+  if(_onStreamMessage!=nullptr){
+      _onStreamMessage(userId, streamId, data, length);
+  }
+
+  if(_verbose){
+      std::cout<<"UserObserver::onStreamMessage: userId "
+               <<userId<<", streamId "<<streamId
+               <<", length "<<length<<std::endl;
+  }
 }

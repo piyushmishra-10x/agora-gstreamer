@@ -73,6 +73,9 @@ AgoraIo::AgoraIo(const bool& verbose,
  _enableProxy(enableProxy),
  _proxyConnectionTimeOut((proxyTimeout < 1 ) ? 10000 : proxyTimeout),
  _proxyIps(proxyIps),
+ _dataStreamId(-1),
+ _dataOutFn(nullptr),
+ _dataOutUserData(nullptr),
  _transcodeVideo(enableTranscode),
  _requireTranscode(true), // start off with transcoder
  _requireKeyframe(false),
@@ -1095,4 +1098,52 @@ std::string AgoraIo::createProxyString(std::list<std::string> ipList){
                              "0], \"rtc.enable_proxy\":true}";
 
     return proxyString;
+}
+
+int AgoraIo::createDataStream(bool reliable, bool ordered){
+
+    if(_dataStreamId>=0){
+        return _dataStreamId;
+    }
+
+    int streamId=-1;
+    int ret=_connection->createDataStream(&streamId, reliable, ordered, false);
+    if(ret!=0){
+        logMessage("Error: failed to create data stream");
+        return -1;
+    }
+
+    _dataStreamId=streamId;
+
+    if(_verbose){
+        std::cout<<"AgoraIo: created data stream with id "<<_dataStreamId<<std::endl;
+    }
+
+    return _dataStreamId;
+}
+
+int AgoraIo::sendData(const char* data, size_t length){
+
+    if(_dataStreamId<0){
+        logMessage("Error: data stream not created, call createDataStream first");
+        return -1;
+    }
+
+    return _connection->sendStreamMessage(_dataStreamId, data, length);
+}
+
+void AgoraIo::setOnDataReceivedFn(agora_data_msg_fn fn, void* userData){
+
+    _dataOutFn=fn;
+    _dataOutUserData=userData;
+
+    if(_userObserver!=nullptr){
+        _userObserver->setOnStreamMessageFn(
+            [this](const std::string& userId, int streamId, const char* data, size_t length){
+                if(_dataOutFn!=nullptr){
+                    _dataOutFn(userId.c_str(), data, length, _dataOutUserData);
+                }
+            }
+        );
+    }
 }

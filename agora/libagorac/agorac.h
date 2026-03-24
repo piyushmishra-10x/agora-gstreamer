@@ -65,6 +65,17 @@ EXTERNC  void agoraio_set_audio_out_handler(AgoraIoContext_t* ctx, agora_media_o
 
 EXTERNC void agoraio_set_sendonly_flag(AgoraIoContext_t* ctx, int flag);
 
+ typedef  void (*agora_data_msg_fn_t)(const char* userId,
+                                      const char* data,
+                                      u_int64_t len,
+                                      void* user_data);
+
+ EXTERNC int agoraio_create_data_stream(AgoraIoContext_t* ctx, int reliable, int ordered);
+
+ EXTERNC int agoraio_send_data(AgoraIoContext_t* ctx, const char* data, unsigned long len);
+
+ EXTERNC void agoraio_set_data_out_handler(AgoraIoContext_t* ctx, agora_data_msg_fn_t fn, void* userData);
+
 #undef EXTERNC
 
 

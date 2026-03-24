@@ -184,3 +184,24 @@ void agoraio_set_sendonly_flag(AgoraIoContext_t* ctx, int flag){
 
    ctx->agoraIo->setSendOnly(flag);
 }
+
+int agoraio_create_data_stream(AgoraIoContext_t* ctx, int reliable, int ordered){
+
+  if(ctx==nullptr || ctx->agoraIo==nullptr)  return -1;
+
+  return ctx->agoraIo->createDataStream(reliable, ordered);
+}
+
+int agoraio_send_data(AgoraIoContext_t* ctx, const char* data, unsigned long len){
+
+  if(ctx==nullptr || ctx->agoraIo==nullptr)  return -1;
+
+  return ctx->agoraIo->sendData(data, len);
+}
+
+void agoraio_set_data_out_handler(AgoraIoContext_t* ctx, agora_data_msg_fn_t fn, void* userData){
+
+  if(ctx==nullptr || ctx->agoraIo==nullptr)  return;
+
+  ctx->agoraIo->setOnDataReceivedFn(reinterpret_cast<agora_data_msg_fn>(fn), userData);
+}
