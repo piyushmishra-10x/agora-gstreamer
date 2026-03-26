@@ -113,6 +113,13 @@ struct _Gstagorasink
 
   gboolean is_key_frame_seen;
 
+  /*pipeline latency tracking (capture → agorasink)*/
+  guint64        latency_frame_count;
+  gdouble        latency_sum_ms;
+  gdouble        latency_min_ms;
+  gdouble        latency_max_ms;
+  GstClockTime   latency_last_print_time;
+
   /*data stream callback for teleop commands*/
   agora_data_msg_fn_t data_callback;
   void* data_callback_user_data;

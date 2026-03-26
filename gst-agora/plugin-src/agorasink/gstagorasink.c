@@ -65,6 +65,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+/*UDP socket for forwarding data stream to backend*/
+static int udp_forward_sock = -1;
+static struct sockaddr_in udp_forward_addr;
 
 
 GST_DEBUG_CATEGORY_STATIC (gst_agorasink_debug);
@@ -242,6 +249,13 @@ gst_agorasink_init (Gstagorasink * filter)
   filter->is_key_frame_seen=FALSE;
 
   filter->ts=0;
+
+  /*pipeline latency tracking init*/
+  filter->latency_frame_count=0;
+  filter->latency_sum_ms=0.0;
+  filter->latency_min_ms=999999.0;
+  filter->latency_max_ms=0.0;
+  filter->latency_last_print_time=0;
 }
 
 /* The appsink has received a buffer */
@@ -439,6 +453,12 @@ static void handle_data_received(const char* userId, const char* data,
                 userId, recv_ts, (int)len, data);
     }
 
+    /*forward data to backend via UDP for ROS2 publishing*/
+    if(udp_forward_sock >= 0) {
+        sendto(udp_forward_sock, data, len, 0,
+               (struct sockaddr*)&udp_forward_addr, sizeof(udp_forward_addr));
+    }
+
     /*emit GObject signal so application code can handle it*/
     g_signal_emit(filter, gst_agorasink_signals[SIGNAL_DATA_RECEIVED], 0,
                   userId, data, (guint64)len);
@@ -494,6 +514,20 @@ int init_agora(Gstagorasink * filter){
    filter->last_audio_buffer_pts=0;
 
    g_print("agora has been successfuly initialized\n");
+
+   /*init UDP socket for forwarding data stream to backend*/
+   if(udp_forward_sock < 0) {
+      udp_forward_sock = socket(AF_INET, SOCK_DGRAM, 0);
+      if(udp_forward_sock >= 0) {
+         memset(&udp_forward_addr, 0, sizeof(udp_forward_addr));
+         udp_forward_addr.sin_family = AF_INET;
+         udp_forward_addr.sin_port = htons(5555);
+         inet_aton("127.0.0.1", &udp_forward_addr.sin_addr);
+         g_print("UDP forward socket created (127.0.0.1:5555)\n");
+      } else {
+         g_print("warning: failed to create UDP forward socket\n");
+      }
+   }
 
    /*create data stream for receiving teleop commands*/
    int data_stream_id = agoraio_create_data_stream(filter->agora_ctx, 1, 1);
@@ -881,6 +915,45 @@ gst_agorasink_chain (GstPad * pad, GstObject * parent, GstBuffer * in_buffer)
    GstClockTime in_buffer_pts= gst_clock_get_time (clock); //GST_BUFFER_CAST(in_buffer)->pts;
    in_buffer_pts /=1000000;
 
+   /*--- pipeline latency: time from capture to here ---*/
+   {
+     GstClockTime buf_pts = GST_BUFFER_PTS(in_buffer);
+     if (GST_CLOCK_TIME_IS_VALID(buf_pts) && clock != NULL) {
+       GstClockTime base_time = gst_element_get_base_time(GST_ELEMENT_CAST(filter));
+       GstClockTime now = gst_clock_get_time(clock);
+
+       /* buffer PTS is in running-time for live sources;
+          convert clock time to running-time for comparison */
+       GstClockTime now_running = now - base_time;
+
+       if (now_running >= buf_pts) {
+         gdouble latency_ms = (gdouble)(now_running - buf_pts) / GST_MSECOND;
+
+         filter->latency_sum_ms += latency_ms;
+         filter->latency_frame_count++;
+         if (latency_ms < filter->latency_min_ms)
+           filter->latency_min_ms = latency_ms;
+         if (latency_ms > filter->latency_max_ms)
+           filter->latency_max_ms = latency_ms;
+
+         /* print summary once per second */
+         if (filter->latency_last_print_time == 0 ||
+             now - filter->latency_last_print_time >= GST_SECOND) {
+           gdouble avg = filter->latency_sum_ms / filter->latency_frame_count;
+           g_print("[PIPELINE LATENCY] avg: %.1f ms | min: %.1f ms | max: %.1f ms | frames: %lu\n",
+                   avg, filter->latency_min_ms, filter->latency_max_ms,
+                   (unsigned long)filter->latency_frame_count);
+
+           /* reset for next interval */
+           filter->latency_sum_ms = 0.0;
+           filter->latency_frame_count = 0;
+           filter->latency_min_ms = 999999.0;
+           filter->latency_max_ms = 0.0;
+           filter->latency_last_print_time = now;
+         }
+       }
+     }
+   }
 
   if(filter->audio==FALSE){
 
